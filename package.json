@@ -1,0 +1,39 @@
+{
+  "name": "budger",
+  "version": "0.1.0",
+  "description": "Local CLI for delegating coding tasks to configurable AI command line tools",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "budger": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "scripts": {
+    "build": "bun build src/cli/main.ts --target=node --format=esm --outfile=dist/cli/main.js --external=node:sqlite",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "check": "biome check . && tsc --noEmit",
+    "test": "bun test",
+    "prepack": "bun run build && bun run check"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@types/bun": "^1.2.20",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}
