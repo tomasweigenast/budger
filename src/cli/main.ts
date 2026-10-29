@@ -16,7 +16,7 @@ import { delegate } from "../tasks/delegate.js";
 const usage = `budger — delegate focused coding tasks to configured local CLIs
 
 Commands:
-  init                         Create config, authorize it, and install Claude Code integration
+  init [--scope project|user]  Create config, authorize it, and install Claude Code integration
   run <route> --question TEXT --paths FILE...
   bulk-read --question TEXT --paths FILE...
   code-write --spec TEXT --reference FILE... --target FILE
@@ -24,7 +24,7 @@ Commands:
   doctor
   executors test <name>
   stats [--last 7d]
-  uninstall
+  uninstall [--scope project|user]
 `;
 
 function options<Options extends ParseArgsOptionsConfig>(args: string[], definitions: Options) {
@@ -49,7 +49,7 @@ function stateFor(err: unknown): number {
     ? 124
     : /cancelled|SIGINT/i.test(message)
       ? 130
-      : /not authorized|Invalid configuration|Unknown route|Unknown command|references unknown|requires exactly|exceeds|escapes|At least one|Too many|not supported|already exists|duplicate fallback|fallback list|--spec|--target|--reference|--question|Usage:|Unexpected .* arguments|Unknown option/i.test(
+      : /not authorized|Invalid configuration|Unknown route|Unknown command|references unknown|requires exactly|exceeds|escapes|At least one|Too many|not supported|already exists|duplicate fallback|fallback list|--scope|--spec|--target|--reference|--question|Usage:|Unexpected .* arguments|Unknown option/i.test(
             message,
           )
         ? 2
@@ -133,10 +133,19 @@ async function main(): Promise<void> {
   }
 
   if (command === "init") {
-    const parsed = options(argv, { "no-claude": { type: "boolean" }, json: { type: "boolean" } });
+    const parsed = options(argv, {
+      "no-claude": { type: "boolean" },
+      scope: { type: "string" },
+      json: { type: "boolean" },
+    });
 
     if (parsed.positionals.length)
       throw new Error(`Unexpected init arguments: ${parsed.positionals.join(" ")}`);
+
+    const scope = parsed.values.scope ?? "project";
+
+    if (scope !== "project" && scope !== "user")
+      throw new Error("--scope must be either project or user");
 
     const root = await findProjectRoot(process.cwd()),
       configPath = join(root, ".budger", "config.yaml");
@@ -168,10 +177,15 @@ async function main(): Promise<void> {
 
     await authorize(loaded);
 
-    if (!parsed.values["no-claude"]) await installClaude(root);
+    if (!parsed.values["no-claude"]) await installClaude(root, scope);
 
     print(
-      { initialized: true, projectRoot: root, claudeIntegration: !parsed.values["no-claude"] },
+      {
+        initialized: true,
+        projectRoot: root,
+        claudeIntegration: !parsed.values["no-claude"],
+        ...(parsed.values["no-claude"] ? {} : { claudeScope: scope }),
+      },
       !!parsed.values.json,
     );
 
@@ -179,10 +193,18 @@ async function main(): Promise<void> {
   }
 
   if (command === "uninstall") {
-    if (argv.length) throw new Error("Usage: budger uninstall");
+    const parsed = options(argv, { scope: { type: "string" } });
 
-    await uninstallClaude(await findProjectRoot(process.cwd()));
-    print("Budger Claude Code integration removed.", false);
+    if (parsed.positionals.length)
+      throw new Error("Usage: budger uninstall [--scope project|user]");
+
+    const scope = parsed.values.scope ?? "project";
+
+    if (scope !== "project" && scope !== "user")
+      throw new Error("--scope must be either project or user");
+
+    await uninstallClaude(await findProjectRoot(process.cwd()), scope);
+    print(`Budger Claude Code ${scope}-scope integration removed.`, false);
 
     return;
   }

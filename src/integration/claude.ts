@@ -1,36 +1,33 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  copyFile,
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const skillNames = ["budger-bulk-reader", "budger-code-writer"];
 
-function artifactPaths(projectRoot: string): string[] {
+type ClaudeScope = "project" | "user";
+
+function claudeRoot(projectRoot: string, scope: ClaudeScope): string {
+  return scope === "user" ? homedir() : projectRoot;
+}
+
+function artifactPaths(root: string): string[] {
   return [
-    ...skillNames.map((name) => join(projectRoot, ".claude", "skills", name, "SKILL.md")),
-    join(projectRoot, ".claude", "budger", "cli.mjs"),
+    ...skillNames.map((name) => join(root, ".claude", "skills", name, "SKILL.md")),
+    join(root, ".claude", "budger", "cli.mjs"),
   ];
 }
 
-function hook(matcher: string) {
+function hook(matcher: string, runtime: string) {
   return {
     matcher,
     hooks: [
       {
         type: "command",
         command: "node",
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands this placeholder.
-        args: ["${CLAUDE_PROJECT_DIR}/.claude/budger/cli.mjs", "hook", "pre-tool-use"],
+        args: [runtime, "hook", "pre-tool-use"],
         timeout: 5,
         onFailure: "continue",
       },
@@ -38,18 +35,42 @@ function hook(matcher: string) {
   };
 }
 
-const ownedHooks = [hook("Read"), hook("Bash")];
+function ownedHooks(root: string, scope: ClaudeScope) {
+  const runtime =
+    scope === "user"
+      ? join(root, ".claude", "budger", "cli.mjs")
+      : // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands this placeholder.
+        "${CLAUDE_PROJECT_DIR}/.claude/budger/cli.mjs";
+
+  return [hook("Read", runtime), hook("Bash", runtime)];
+}
 
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function isOwnedHook(value: unknown): boolean {
+function isOwnedHook(value: unknown, hooks: ReturnType<typeof ownedHooks>): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 
   const entry = value as Record<string, unknown>;
 
-  return ownedHooks.some((item) => item.matcher === entry.matcher && same(item.hooks, entry.hooks));
+  return hooks.some((item) => item.matcher === entry.matcher && same(item.hooks, entry.hooks));
+}
+
+function mergeHooks(settings: Record<string, unknown>, hooks: ReturnType<typeof ownedHooks>) {
+  const current = settings.hooks;
+
+  if (current !== undefined && (!current || typeof current !== "object" || Array.isArray(current)))
+    throw new Error("settings hooks must be an object keyed by event name");
+
+  const events = { ...((current ?? {}) as Record<string, unknown>) };
+  const preToolUse = events.PreToolUse ?? [];
+
+  if (!Array.isArray(preToolUse)) throw new Error("settings hooks.PreToolUse must be an array");
+
+  events.PreToolUse = [...preToolUse.filter((entry) => !isOwnedHook(entry, hooks)), ...hooks];
+
+  return events;
 }
 
 async function hash(path: string): Promise<string | null> {
@@ -127,21 +148,30 @@ async function assertProjectPath(projectRoot: string, target: string): Promise<v
   }
 }
 
-export async function installClaude(projectRoot: string): Promise<void> {
-  const settingsPath = join(projectRoot, ".claude", "settings.local.json");
-  const runtimePath = join(projectRoot, ".claude", "budger", "cli.mjs");
-  const manifestPath = join(projectRoot, ".claude", "budger", "manifest.json");
+export async function installClaude(
+  projectRoot: string,
+  scope: ClaudeScope = "project",
+): Promise<void> {
+  const root = claudeRoot(projectRoot, scope);
+  const settingsPath = join(
+    root,
+    ".claude",
+    scope === "user" ? "settings.json" : "settings.local.json",
+  );
+  const runtimePath = join(root, ".claude", "budger", "cli.mjs");
+  const manifestPath = join(root, ".claude", "budger", "manifest.json");
+  const hooks = ownedHooks(root, scope);
   const artifacts = [
     ...skillNames.map((name) => ({
       source: join(packageRoot, "assets", "skills", name, "SKILL.md"),
-      target: join(projectRoot, ".claude", "skills", name, "SKILL.md"),
+      target: join(root, ".claude", "skills", name, "SKILL.md"),
     })),
     { source: join(packageRoot, "dist", "cli", "main.js"), target: runtimePath },
   ];
   const allowedArtifacts = new Set(artifacts.map((artifact) => artifact.target));
   await Promise.all(
     [settingsPath, manifestPath, ...artifacts.map((artifact) => artifact.target)].map((target) =>
-      assertProjectPath(projectRoot, target),
+      assertProjectPath(root, target),
     ),
   );
   await Promise.all(
@@ -160,8 +190,14 @@ export async function installClaude(projectRoot: string): Promise<void> {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         throw new Error("settings root must be an object");
 
-      if (parsed.hooks !== undefined && !Array.isArray(parsed.hooks))
-        throw new Error("settings hooks must be an array");
+      if (
+        parsed.hooks !== undefined &&
+        (!parsed.hooks || typeof parsed.hooks !== "object" || Array.isArray(parsed.hooks))
+      )
+        throw new Error("settings hooks must be an object keyed by event name");
+
+      if (parsed.hooks?.PreToolUse !== undefined && !Array.isArray(parsed.hooks.PreToolUse))
+        throw new Error("settings hooks.PreToolUse must be an array");
 
       settings = parsed;
     } catch (error) {
@@ -169,7 +205,6 @@ export async function installClaude(projectRoot: string): Promise<void> {
     }
   }
 
-  const existingHooks = Array.isArray(settings.hooks) ? (settings.hooks as unknown[]) : [];
   let previousHashes: Record<string, string> = {};
   const manifestBytes = await optionalFile(manifestPath);
 
@@ -211,7 +246,7 @@ export async function installClaude(projectRoot: string): Promise<void> {
 
   const mergedSettings = {
     ...settings,
-    hooks: [...existingHooks.filter((entry) => !isOwnedHook(entry)), ...ownedHooks],
+    hooks: mergeHooks(settings, hooks),
   };
   const settingsContent = `${JSON.stringify(mergedSettings, null, 2)}\n`;
 
@@ -222,7 +257,16 @@ export async function installClaude(projectRoot: string): Promise<void> {
     const temp = join(dirname(artifact.target), `.budger-${randomUUID()}.tmp`);
 
     try {
-      await copyFile(artifact.source, temp);
+      let contents = await readFile(artifact.source);
+
+      if (scope === "user")
+        contents = Buffer.from(
+          contents
+            .toString("utf8")
+            .replaceAll("node .claude/budger/cli.mjs", `node "${runtimePath}"`),
+        );
+
+      await writeFile(temp, contents, { flag: "wx", mode: 0o600 });
       await rename(temp, artifact.target);
     } finally {
       await rm(temp, { force: true });
@@ -248,10 +292,19 @@ export async function installClaude(projectRoot: string): Promise<void> {
   await atomicWrite(settingsPath, settingsContent, settingsMode);
 }
 
-export async function uninstallClaude(projectRoot: string): Promise<void> {
-  const manifestPath = join(projectRoot, ".claude", "budger", "manifest.json");
-  const settingsPath = join(projectRoot, ".claude", "settings.local.json");
-  await assertProjectPath(projectRoot, manifestPath);
+export async function uninstallClaude(
+  projectRoot: string,
+  scope: ClaudeScope = "project",
+): Promise<void> {
+  const root = claudeRoot(projectRoot, scope);
+  const manifestPath = join(root, ".claude", "budger", "manifest.json");
+  const settingsPath = join(
+    root,
+    ".claude",
+    scope === "user" ? "settings.json" : "settings.local.json",
+  );
+  const hooks = ownedHooks(root, scope);
+  await assertProjectPath(root, manifestPath);
   await assertNoFinalSymlink(manifestPath);
   let manifest: { version: number; hashes: Record<string, string> };
   let manifestBytes: Buffer;
@@ -265,7 +318,7 @@ export async function uninstallClaude(projectRoot: string): Promise<void> {
     throw new Error(`Could not read Budger installation manifest: ${(error as Error).message}`);
   }
 
-  const allowed = new Set(artifactPaths(projectRoot));
+  const allowed = new Set(artifactPaths(root));
 
   if (
     !manifest ||
@@ -282,11 +335,9 @@ export async function uninstallClaude(projectRoot: string): Promise<void> {
       throw new Error("Invalid Budger installation manifest entry");
 
   await Promise.all(
-    [settingsPath, ...artifactPaths(projectRoot)].map((target) =>
-      assertProjectPath(projectRoot, target),
-    ),
+    [settingsPath, ...artifactPaths(root)].map((target) => assertProjectPath(root, target)),
   );
-  await Promise.all([settingsPath, ...artifactPaths(projectRoot)].map(assertNoFinalSymlink));
+  await Promise.all([settingsPath, ...artifactPaths(root)].map(assertNoFinalSymlink));
   const settingsBytes = await optionalFile(settingsPath);
   const settingsMode = await existingMode(settingsPath);
 
@@ -299,16 +350,34 @@ export async function uninstallClaude(projectRoot: string): Promise<void> {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         throw new Error("settings root must be an object");
 
-      if (parsed.hooks !== undefined && !Array.isArray(parsed.hooks))
-        throw new Error("settings hooks must be an array");
+      if (
+        parsed.hooks !== undefined &&
+        (!parsed.hooks || typeof parsed.hooks !== "object" || Array.isArray(parsed.hooks))
+      )
+        throw new Error("settings hooks must be an object keyed by event name");
+
+      if (parsed.hooks?.PreToolUse !== undefined && !Array.isArray(parsed.hooks.PreToolUse))
+        throw new Error("settings hooks.PreToolUse must be an array");
 
       settings = parsed;
     } catch (error) {
       throw new Error(`Invalid Claude settings file: ${(error as Error).message}`);
     }
 
-    if (Array.isArray(settings.hooks))
-      settings.hooks = (settings.hooks as unknown[]).filter((entry) => !isOwnedHook(entry));
+    if (settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)) {
+      const events = { ...(settings.hooks as Record<string, unknown>) };
+      const preToolUse = events.PreToolUse;
+
+      if (Array.isArray(preToolUse)) {
+        const remaining = preToolUse.filter((entry) => !isOwnedHook(entry, hooks));
+
+        if (remaining.length) events.PreToolUse = remaining;
+        else delete events.PreToolUse;
+      }
+
+      if (Object.keys(events).length) settings.hooks = events;
+      else delete settings.hooks;
+    }
 
     const latest = await optionalFile(settingsPath);
 
