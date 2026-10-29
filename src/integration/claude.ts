@@ -259,7 +259,7 @@ export async function installClaude(
     try {
       let contents = await readFile(artifact.source);
 
-      if (scope === "user")
+      if (scope === "user" && artifact.source.endsWith(".md"))
         contents = Buffer.from(
           contents
             .toString("utf8")
