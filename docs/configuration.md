@@ -4,6 +4,18 @@
 
 `budger init` creates `.budger/config.yaml` if needed, displays the effective executors and routes, authorizes that configuration for the current project, and installs the Claude Code integration. It does not call a model. Review the configuration before accepting it. Any change to the effective configuration requires running `budger init` again before delegating.
 
+By default, Budger uses the nearest existing `.budger/config.yaml`; if none exists, it falls back to the Git root. In a monorepo, that Git root may not be the application directory you want. Choose the subproject explicitly:
+
+```sh
+budger init --project-root frontend --scope user
+cd frontend
+budger config validate
+budger init --scope user
+budger bulk-read --question "Trace the login flow" --paths src/auth.ts --paths src/routes/login.ts
+```
+
+The first command creates `frontend/.budger/config.yaml`. From `frontend`, Budger resolves that config and treats `frontend` as the root for `--paths`, `--reference`, and `--target`. Start Claude Code from that subproject too if you want its global hooks and skills to use the same config and path base. `--project-root` must name an existing directory; it may be absolute or relative to the current directory. A nearer `.budger/config.yaml` takes precedence over a parent project's config. Project config is not inherited from parent directories once a nearer config exists; user-level config still merges in.
+
 By default, integration is installed for the current project:
 
 ```sh
@@ -27,7 +39,7 @@ budger uninstall --scope project
 budger uninstall --scope user
 ```
 
-`uninstall` defaults to `project`. Budger preserves unrelated settings and only removes installed files whose hashes still match its manifest. If you edited an installed file, Budger leaves it in place.
+`uninstall` defaults to `project`. Use the same `--project-root frontend` when uninstalling from outside the selected project. Budger preserves unrelated settings and only removes installed files whose hashes still match its manifest. If you edited an installed file, Budger leaves it in place.
 
 The integration scope is separate from Budger's route config and local trust authorization. `init --scope user` still creates/uses the current project's `.budger/config.yaml` and authorizes that config for this project; only Claude skills, hooks, and runtime are user-wide.
 

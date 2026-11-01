@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import { CONFIG_EXAMPLE, findProjectRoot, loadConfig, validateConfig } from "../core/config.js";
 import { authorize, isTrusted } from "../core/trust.js";
@@ -16,7 +16,8 @@ import { delegate } from "../tasks/delegate.js";
 const usage = `budger — delegate focused coding tasks to configured local CLIs
 
 Commands:
-  init [--scope project|user]  Create config, authorize it, and install Claude Code integration
+  init [--project-root DIR] [--scope project|user]
+                               Create config, authorize it, and install Claude Code integration
   run <route> --question TEXT --paths FILE...
   bulk-read --question TEXT --paths FILE...
   code-write --spec TEXT --reference FILE... --target FILE
@@ -24,7 +25,7 @@ Commands:
   doctor
   executors test <name>
   stats [--last 7d]
-  uninstall [--scope project|user]
+  uninstall [--project-root DIR] [--scope project|user]
 `;
 
 function options<Options extends ParseArgsOptionsConfig>(args: string[], definitions: Options) {
@@ -49,7 +50,7 @@ function stateFor(err: unknown): number {
     ? 124
     : /cancelled|SIGINT/i.test(message)
       ? 130
-      : /not authorized|Invalid configuration|Unknown route|Unknown command|references unknown|requires exactly|exceeds|escapes|At least one|Too many|not supported|already exists|duplicate fallback|fallback list|--scope|--spec|--target|--reference|--question|Usage:|Unexpected .* arguments|Unknown option/i.test(
+      : /not authorized|Invalid configuration|Unknown route|Unknown command|references unknown|requires exactly|exceeds|escapes|At least one|Too many|not supported|already exists|duplicate fallback|fallback list|--project-root|--scope|--spec|--target|--reference|--question|Usage:|Unexpected .* arguments|Unknown option/i.test(
             message,
           )
         ? 2
@@ -111,6 +112,26 @@ async function assertLocalConfigPath(projectRoot: string, configPath: string): P
   }
 }
 
+async function resolveSelectedProjectRoot(cwd: string, selected?: string): Promise<string> {
+  if (!selected) return findProjectRoot(cwd);
+
+  const target = resolve(cwd, selected);
+
+  try {
+    const stat = await lstat(target);
+
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("--project-root must point to a real directory");
+
+    return await realpath(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      throw new Error(`--project-root directory does not exist: ${selected}`);
+
+    throw error;
+  }
+}
+
 async function checkTrusted(cwd: string) {
   const loaded = await loadConfig(cwd);
 
@@ -135,6 +156,7 @@ async function main(): Promise<void> {
   if (command === "init") {
     const parsed = options(argv, {
       "no-claude": { type: "boolean" },
+      "project-root": { type: "string" },
       scope: { type: "string" },
       json: { type: "boolean" },
     });
@@ -147,7 +169,7 @@ async function main(): Promise<void> {
     if (scope !== "project" && scope !== "user")
       throw new Error("--scope must be either project or user");
 
-    const root = await findProjectRoot(process.cwd()),
+    const root = await resolveSelectedProjectRoot(process.cwd(), parsed.values["project-root"]),
       configPath = join(root, ".budger", "config.yaml");
     await assertLocalConfigPath(root, configPath);
     await mkdir(join(root, ".budger"), { recursive: true });
@@ -193,17 +215,23 @@ async function main(): Promise<void> {
   }
 
   if (command === "uninstall") {
-    const parsed = options(argv, { scope: { type: "string" } });
+    const parsed = options(argv, {
+      "project-root": { type: "string" },
+      scope: { type: "string" },
+    });
 
     if (parsed.positionals.length)
-      throw new Error("Usage: budger uninstall [--scope project|user]");
+      throw new Error("Usage: budger uninstall [--project-root DIR] [--scope project|user]");
 
     const scope = parsed.values.scope ?? "project";
 
     if (scope !== "project" && scope !== "user")
       throw new Error("--scope must be either project or user");
 
-    await uninstallClaude(await findProjectRoot(process.cwd()), scope);
+    await uninstallClaude(
+      await resolveSelectedProjectRoot(process.cwd(), parsed.values["project-root"]),
+      scope,
+    );
     print(`Budger Claude Code ${scope}-scope integration removed.`, false);
 
     return;

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { findProjectRoot, loadConfig } from "../../src/core/config.js";
 import { executeProcess, type ProcessError } from "../../src/executors/process.js";
 import { evaluateHook } from "../../src/hooks/pre-tool-use.js";
@@ -49,6 +51,45 @@ describe("configuration and delegation", () => {
     await mkdir(nested, { recursive: true });
     await mkdir(join(root, ".git"));
     expect(await findProjectRoot(nested)).toBe(root);
+  });
+
+  test("init can create Budger config in a selected monorepo subproject", async () => {
+    const root = await mkdtemp(join(tmpdir(), "budger-monorepo-test-"));
+    roots.push(root);
+    const app = join(root, "apps", "frontend"),
+      cli = fileURLToPath(new URL("../../src/cli/main.ts", import.meta.url)),
+      env = {
+        ...process.env,
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        XDG_STATE_HOME: join(root, "xdg-state"),
+      };
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(app, { recursive: true });
+
+    const init = spawnSync(
+      process.execPath,
+      [cli, "init", "--no-claude", "--project-root", "apps/frontend"],
+      { cwd: root, env, encoding: "utf8" },
+    );
+    expect(init.status).toBe(0);
+    await readFile(join(app, ".budger", "config.yaml"));
+
+    const show = spawnSync(process.execPath, [cli, "config", "show", "--json"], {
+      cwd: app,
+      env,
+      encoding: "utf8",
+    });
+    expect(show.status).toBe(0);
+    expect(JSON.parse(show.stdout).projectRoot).toBe(await realpath(app));
+
+    await writeFile(join(app, ".budger", "config.yaml"), config());
+    await mkdir(join(app, "src"));
+    await writeFile(join(app, "src", "entry.ts"), "export const app = true;\n");
+    const result = await delegate(await loadConfig(app), "bulk-read", "Summarize", [
+      "src/entry.ts",
+    ]);
+    expect(result.text).toContain('"path":"src/entry.ts"');
+    expect(result.text).toContain("export const app = true");
   });
 
   test("merges route names but replaces each project definition and merges hook fields", async () => {

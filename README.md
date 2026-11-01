@@ -47,6 +47,8 @@ budger doctor
 
 `init` does not call a model. It asks you to review the configured executable and routes, then authorizes the current project's config. Run it again after changing the config, using the same scope. Use `budger uninstall --scope project` or `budger uninstall --scope user` to remove that scope's integration.
 
+In a monorepo, select the app directory with `budger init --project-root frontend --scope user`, then run Budger and Claude Code from `frontend`. File paths are relative to the directory containing the nearest `.budger/config.yaml`.
+
 Use Budger directly:
 
 ```sh
