@@ -47,6 +47,8 @@ The integration scope is separate from Budger's route config and local trust aut
 
 A route's `instructions` are stable task framing shared by every call to that route. For example, `bulk-read` can always ask for concise answers with file citations, while `code-write` can always ask for code without Markdown fences. The caller supplies the task-specific request with `--question` or `--spec`; Claude Code can put its current request and constraints there. Budger combines the route instructions, caller request, and selected file contents into one prompt. File contents are JSON-serialized and labeled untrusted data.
 
+`budger analyze --question TEXT` uses the configured `analyze` route without selected files. Budger snapshots Git-tracked and non-ignored untracked files under the resolved project root, then starts the route executor with the snapshot as its working directory so the delegated CLI can explore it. The snapshot includes working-tree edits, excludes `.git` and Git-ignored files, and is removed after success, failure, or cancellation. Snapshot creation failures stop the run. This is best-effort isolation: an arbitrary executor may still access paths outside its working directory, so configure the executor's own read-only permissions when available. `analyze` applies the route's `maxInputBytes` to the prompt and `maxResultBytes` to the answer; file-count and per-file limits apply to selected-file commands, not the workspace snapshot.
+
 For example, this request contains the caller's task-specific instructions:
 
 ```sh
@@ -118,7 +120,7 @@ Authenticate Command Code separately with `cmd login`. Budger does not manage lo
 
 ## Routes, instructions, and limits
 
-A route names its primary executor, optional fallbacks, stable instructions, and caps for selected files and prompt/result sizes. `bulk-read` and `code-write` are built-in route names; `budger run NAME` can call any configured route that follows the generic question-and-files format.
+A route names its primary executor, optional fallbacks, stable instructions, and caps for selected files and prompt/result sizes. `analyze`, `bulk-read`, and `code-write` are command-specific route names; `budger run NAME` calls a configured route using the generic question-and-files format.
 
 Route fields:
 

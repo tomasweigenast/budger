@@ -10,6 +10,7 @@ import { executeProcess, ProcessError } from "../executors/process.js";
 import { evaluateHook } from "../hooks/pre-tool-use.js";
 import { installClaude, uninstallClaude } from "../integration/claude.js";
 import { beginRun, finishRun, readStats, recordAttempt } from "../metrics/store.js";
+import { analyzeWorkspace } from "../tasks/analyze.js";
 import { codeWrite } from "../tasks/code-write.js";
 import { delegate } from "../tasks/delegate.js";
 
@@ -21,6 +22,7 @@ Commands:
                                Defaults to the current directory
   run <route> --question TEXT --paths FILE...
   bulk-read --question TEXT --paths FILE...
+  analyze --question TEXT
   code-write --spec TEXT --reference FILE... --target FILE
   config show|validate
   doctor
@@ -495,8 +497,9 @@ async function main(): Promise<void> {
     }
   }
 
-  if (command === "bulk-read" || command === "run") {
-    const route = command === "run" ? argv.shift() : "bulk-read";
+  if (command === "bulk-read" || command === "run" || command === "analyze") {
+    const route =
+      command === "run" ? argv.shift() : command === "analyze" ? "analyze" : "bulk-read";
 
     if (!route) throw new Error("Route name required");
 
@@ -508,6 +511,11 @@ async function main(): Promise<void> {
 
     if (parsed.positionals.length)
       throw new Error(`Unexpected arguments: ${parsed.positionals.join(" ")}`);
+
+    if (command === "analyze" && parsed.values.paths?.length)
+      throw new Error(
+        "analyze scans the Git-visible project workspace and does not accept --paths",
+      );
 
     const question = parsed.values.question;
 
@@ -531,26 +539,30 @@ async function main(): Promise<void> {
     }
 
     try {
-      const result = await delegate(
-        loaded,
-        route,
-        question,
-        parsed.values.paths ?? [],
-        controller.signal,
-        async (attempt) => {
-          attemptNo++;
+      const onAttempt = async (attempt: Parameters<typeof recordAttempt>[3]) => {
+        attemptNo++;
 
-          if (recordingAttempts)
-            try {
-              await recordAttempt(loaded, runId, attemptNo, attempt);
-            } catch (error) {
-              process.stderr.write(
-                `Warning: could not record attempt metrics: ${(error as Error).message}\n`,
-              );
-              recordingAttempts = false;
-            }
-        },
-      );
+        if (recordingAttempts)
+          try {
+            await recordAttempt(loaded, runId, attemptNo, attempt);
+          } catch (error) {
+            process.stderr.write(
+              `Warning: could not record attempt metrics: ${(error as Error).message}\n`,
+            );
+            recordingAttempts = false;
+          }
+      };
+      const result =
+        command === "analyze"
+          ? await analyzeWorkspace(loaded, question, controller.signal, onAttempt)
+          : await delegate(
+              loaded,
+              route,
+              question,
+              parsed.values.paths ?? [],
+              controller.signal,
+              onAttempt,
+            );
 
       if (runStarted)
         try {
@@ -558,8 +570,8 @@ async function main(): Promise<void> {
             status: "success",
             executor: result.executor,
             durationMs: Date.now() - start,
-            files: result.files,
-            inputBytes: result.inputBytes,
+            ...("files" in result ? { files: result.files } : {}),
+            ...("inputBytes" in result ? { inputBytes: result.inputBytes } : {}),
             resultBytes: Buffer.byteLength(result.text),
             estimateTokens: loaded.config.metrics.estimateTokens,
           });

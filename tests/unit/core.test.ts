@@ -8,6 +8,7 @@ import { findProjectRoot, loadConfig } from "../../src/core/config.js";
 import { executeProcess, type ProcessError } from "../../src/executors/process.js";
 import { evaluateHook } from "../../src/hooks/pre-tool-use.js";
 import { beginRun, finishRun, readStats, recordAttempt } from "../../src/metrics/store.js";
+import { analyzeWorkspace, createWorkspaceSnapshot } from "../../src/tasks/analyze.js";
 import { codeWrite } from "../../src/tasks/code-write.js";
 import { delegate } from "../../src/tasks/delegate.js";
 
@@ -33,7 +34,7 @@ function config(
     "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(s))",
   ],
 ) {
-  return `version: 1\nexecutors:\n  local:\n    command: ${JSON.stringify(command)}\n    args: ${JSON.stringify(args)}\n    input: { mode: stdin }\nroutes:\n  bulk-read:\n    executor: local\n    instructions: Answer briefly.\n  code-write:\n    executor: local\n    instructions: Return the supplied content.\n    limits: { maxResultBytes: 10000 }\n`;
+  return `version: 1\nexecutors:\n  local:\n    command: ${JSON.stringify(command)}\n    args: ${JSON.stringify(args)}\n    input: { mode: stdin }\nroutes:\n  analyze:\n    executor: local\n    instructions: Analyze workspace.\n  bulk-read:\n    executor: local\n    instructions: Answer briefly.\n  code-write:\n    executor: local\n    instructions: Return the supplied content.\n    limits: { maxResultBytes: 10000 }\n`;
 }
 
 describe("configuration and delegation", () => {
@@ -51,6 +52,112 @@ describe("configuration and delegation", () => {
     await mkdir(nested, { recursive: true });
     await mkdir(join(root, ".git"));
     expect(await findProjectRoot(nested)).toBe(root);
+  });
+
+  test("analyze delegates the question with a Git-visible workspace snapshot", async () => {
+    const root = await fixture();
+    const script = `const fs=require('node:fs');let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{const result={cwd:process.cwd(),tracked:fs.readFileSync('tracked.txt','utf8'),untracked:fs.readFileSync('untracked.txt','utf8'),ignored:fs.existsSync('ignored.txt'),env:fs.existsSync('.env'),git:fs.existsSync('.git'),prompt:input};fs.writeFileSync('agent-write.txt','temporary');process.stdout.write(JSON.stringify(result))})`;
+    await writeFile(join(root, ".gitignore"), ".env\nignored.txt\n");
+    await writeFile(join(root, ".budger", "config.yaml"), config(process.execPath, ["-e", script]));
+    await writeFile(join(root, "tracked.txt"), "staged version");
+    const gitInit = spawnSync("git", ["init"], { cwd: root, encoding: "utf8" });
+    expect(gitInit.status).toBe(0);
+    const gitAdd = spawnSync("git", ["add", ".gitignore", ".budger/config.yaml", "tracked.txt"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(gitAdd.status).toBe(0);
+    await writeFile(join(root, "tracked.txt"), "working tree version");
+    await writeFile(join(root, "untracked.txt"), "untracked content");
+    await writeFile(join(root, "ignored.txt"), "must not be copied");
+    await writeFile(join(root, ".env"), "secret=ignored");
+
+    const loaded = await loadConfig(root);
+    required(loaded.config.executors.local).cwd = "{tempDir}";
+    const result = await analyzeWorkspace(loaded, "Explain the project structure");
+    const inspected = JSON.parse(result.text) as {
+      cwd: string;
+      tracked: string;
+      untracked: string;
+      ignored: boolean;
+      env: boolean;
+      git: boolean;
+      prompt: string;
+    };
+
+    expect(inspected.cwd).not.toBe(root);
+    expect(inspected.tracked).toBe("working tree version");
+    expect(inspected.untracked).toBe("untracked content");
+    expect(inspected.ignored).toBe(false);
+    expect(inspected.env).toBe(false);
+    expect(inspected.git).toBe(false);
+    expect(inspected.prompt).toContain("Explain the project structure");
+    expect(result.workspaceFiles).toBe(4);
+    await expect(readFile(join(root, "agent-write.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(inspected.cwd, "tracked.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("analyze stops when the project has no Git working tree", async () => {
+    const root = await fixture();
+    await writeFile(join(root, ".budger", "config.yaml"), config());
+
+    await expect(analyzeWorkspace(await loadConfig(root), "Analyze this project")).rejects.toThrow(
+      "requires a Git working tree",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "analyze refuses symlinks outside the project",
+    async () => {
+      const root = await fixture(),
+        outside = join(dirname(root), "budger-analyze-outside.txt");
+      await writeFile(join(root, ".budger", "config.yaml"), config());
+      await writeFile(outside, "private");
+      await symlink(outside, join(root, "outside.txt"));
+      expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
+      expect(spawnSync("git", ["add", "."], { cwd: root }).status).toBe(0);
+
+      try {
+        await expect(createWorkspaceSnapshot(root)).rejects.toThrow("outside the project");
+      } finally {
+        await rm(outside, { force: true });
+      }
+    },
+  );
+
+  test("analyze CLI accepts a question without file paths", async () => {
+    const root = await fixture();
+    const script = `const fs=require('node:fs');process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('Found: '+fs.readFileSync('source.txt','utf8')))`;
+    await writeFile(join(root, ".budger", "config.yaml"), config(process.execPath, ["-e", script]));
+    await writeFile(join(root, "source.txt"), "source content");
+    expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
+    expect(spawnSync("git", ["add", "."], { cwd: root }).status).toBe(0);
+
+    const cli = fileURLToPath(new URL("../../src/cli/main.ts", import.meta.url)),
+      env = {
+        ...process.env,
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        XDG_STATE_HOME: join(root, "xdg-state"),
+      },
+      init = spawnSync(process.execPath, [cli, "init", "--no-claude"], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+      });
+
+    expect(init.status).toBe(0);
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "analyze", "--question", "Summarize the source"],
+      { cwd: root, env, encoding: "utf8" },
+    );
+
+    if (result.status !== 0) throw new Error(result.stderr);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Found: source content");
   });
 
   test("init can create Budger config in a selected monorepo subproject", async () => {

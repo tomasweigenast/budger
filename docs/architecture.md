@@ -11,7 +11,7 @@ CLI ── config + local trust ── task validation ── route/fallback
                                     SQLite run/attempt metrics ── CLI output
 ```
 
-`core` owns configuration, route resolution, limits, and local configuration authorization. `tasks` validates selected files, builds the untrusted-data prompt, and handles safe file publication for `code-write`. `executors` owns child process creation, stdio, termination, response parsing, and usage mapping. `hooks` reads Claude Code events and applies conservative `Read`/`Bash` checks. `integration` installs project-local skills and hooks and tracks owned files. `metrics` stores only run metadata and selected reported/estimated measures. `cli` owns parsing, output streams, and exit codes.
+`core` owns configuration, route resolution, limits, and local configuration authorization. `tasks` validates selected files, builds untrusted-data prompts, snapshots Git-visible workspace files for `analyze`, and handles safe file publication for `code-write`. `executors` owns child process creation, stdio, termination, response parsing, and usage mapping. `hooks` reads Claude Code events and applies conservative `Read`/`Bash` checks. `integration` installs project-local skills and hooks and tracks owned files. `metrics` stores only run metadata and selected reported/estimated measures. `cli` owns parsing, output streams, and exit codes.
 
 The executor has no task or Claude-specific behavior. Adding a route is configuration; adding a new effect requires task code. There is no public provider interface, dynamic plugin loader, conversation store, or MCP server.
 

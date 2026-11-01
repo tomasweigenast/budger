@@ -164,6 +164,51 @@ export async function delegate(
   if (Buffer.byteLength(prompt) > route.limits.maxInputBytes)
     throw new Error(`Constructed prompt exceeds route input limit`);
 
+  return executeRoutePrompt(
+    loaded,
+    routeName,
+    prompt,
+    loaded.projectRoot,
+    files.length,
+    files.reduce((sum, file) => sum + file.bytes, 0),
+    signal,
+    onAttempt,
+  );
+}
+
+export async function executeRoutePrompt(
+  loaded: LoadedConfig,
+  routeName: string,
+  prompt: string,
+  cwd: string,
+  files: number,
+  inputBytes: number,
+  signal?: AbortSignal,
+  onAttempt?: (attempt: Attempt) => Promise<void> | void,
+  forceProjectCwd = false,
+): Promise<{
+  executor: string;
+  text: string;
+  attempts: number;
+  durationMs: number;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    reasoningOutputTokens?: number;
+  };
+  files: number;
+  inputBytes: number;
+}> {
+  if (process.env.BUDGER_ACTIVE === "1")
+    throw new ProcessError("cancelled", "Nested Budger delegation is disabled");
+
+  if (signal?.aborted) throw new ProcessError("cancelled", "Execution cancelled");
+
+  const route = loaded.config.routes[routeName];
+
+  if (!route) throw new Error(`Unknown route: ${routeName}`);
+
   let attempts = 0;
   let lastError: unknown;
   const started = Date.now();
@@ -175,14 +220,18 @@ export async function delegate(
     const attemptStart = Date.now();
 
     try {
-      const executor = loaded.config.executors[name];
+      const configuredExecutor = loaded.config.executors[name];
 
-      if (!executor) throw new Error(`Invalid configuration: unknown executor ${name}`);
+      if (!configuredExecutor) throw new Error(`Invalid configuration: unknown executor ${name}`);
+
+      const executor = forceProjectCwd
+        ? { ...configuredExecutor, cwd: "{projectRoot}" }
+        : configuredExecutor;
 
       const result = await executeProcess({
         executor,
         prompt,
-        cwd: loaded.projectRoot,
+        cwd,
         ...(signal ? { signal } : {}),
       });
 
@@ -206,8 +255,8 @@ export async function delegate(
         attempts,
         durationMs: Date.now() - started,
         ...(result.usage ? { usage: result.usage } : {}),
-        files: files.length,
-        inputBytes: files.reduce((sum, file) => sum + file.bytes, 0),
+        files,
+        inputBytes,
       };
     } catch (error) {
       lastError = error;

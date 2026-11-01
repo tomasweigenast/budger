@@ -5,7 +5,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const skillNames = ["budger-bulk-reader", "budger-code-writer"];
+const skillNames = ["budger-analyze", "budger-bulk-reader", "budger-code-writer"];
 
 type ClaudeScope = "project" | "user";
 

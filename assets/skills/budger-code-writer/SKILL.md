@@ -1,10 +1,10 @@
 ---
 
 name: budger-code-writer
-description: Generate a code file from a specification and selected references.
+description: Delegate generation of a new code file from a specification and known project references when that is useful for the task.
 ---
 
-Use `/budger-code-writer <specification>` with one or more relevant reference files and a new target path:
+When a task requires creating a new code file and delegated generation from project examples would be useful, use `/budger-code-writer <specification>` even if the user did not explicitly ask for Budger. Determine one or more relevant reference files and a new target path from the task. If discovering references requires broad repository exploration, use `/budger-analyze` to investigate first. Then invoke:
 
 ```sh
 node .claude/budger/cli.mjs code-write --spec "<specification>" --reference "<reference one>" --reference "<reference two>" --target "<new file>"

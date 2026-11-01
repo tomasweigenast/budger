@@ -1,6 +1,6 @@
 {
   "name": "@tomasweigenast/budger",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local CLI for delegating coding tasks to configurable AI command line tools",
   "license": "Apache-2.0",
   "type": "module",
