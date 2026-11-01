@@ -18,6 +18,7 @@ const usage = `budger — delegate focused coding tasks to configured local CLIs
 Commands:
   init [--project-root DIR] [--scope project|user]
                                Create config, authorize it, and install Claude Code integration
+                               Defaults to the current directory
   run <route> --question TEXT --paths FILE...
   bulk-read --question TEXT --paths FILE...
   code-write --spec TEXT --reference FILE... --target FILE
@@ -169,7 +170,9 @@ async function main(): Promise<void> {
     if (scope !== "project" && scope !== "user")
       throw new Error("--scope must be either project or user");
 
-    const root = await resolveSelectedProjectRoot(process.cwd(), parsed.values["project-root"]),
+    const root = parsed.values["project-root"]
+        ? await resolveSelectedProjectRoot(process.cwd(), parsed.values["project-root"])
+        : await realpath(process.cwd()),
       configPath = join(root, ".budger", "config.yaml");
     await assertLocalConfigPath(root, configPath);
     await mkdir(join(root, ".budger"), { recursive: true });
