@@ -1,4 +1,5 @@
 ---
+
 name: budger-local-reading
 description: Read project files with minimal context. Use when exploring code, locating definitions, or inspecting files; prefer rg and bounded Read calls.
 ---
