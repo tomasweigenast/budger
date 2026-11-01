@@ -72,7 +72,7 @@ Route `instructions` are reusable guidance; the caller's task-specific request g
 
 Claude Code runs Budger's `PreToolUse` hooks before matching `Read` and `Bash` calls. Small/bounded reads pass through; a recognized large unbounded read is denied with a suggestion to use `/budger-bulk-reader`. The hook does not delegate files itself. If Claude then invokes Budger, the route's byte/file limits apply to that delegation. Budger merges its hooks into Claude's existing `PreToolUse` list and preserves other hook events/settings. `BUDGER_DISABLE_HOOKS=1` bypasses Budger's hook decisions. See [how hooks and limits interact](docs/configuration.md#how-this-works-with-claude-code-pretooluse).
 
-The analyze skill lets Claude delegate when its task needs broad project exploration, even if the user did not explicitly request an analysis; Claude passes the full question without selecting paths. The code-writer skill asks Budger to create a new file; existing targets are never overwritten. Claude Code should review delegated answers and generated files.
+The local-reading skill guides Claude toward `rg` searches and bounded `Read` calls. The analyze skill lets Claude delegate when its task needs broad project exploration, even if the user did not explicitly request an analysis; Claude passes the full question without selecting paths. The code-writer skill asks Budger to create a new file; existing targets are never overwritten. Claude Code should review delegated answers and generated files.
 
 ## More
 
